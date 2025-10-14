@@ -20,7 +20,7 @@ if (!JWT_SECRET) {
 }
 // 3. ใช้งาน Middleware
 const corsOptions = {
-  origin: '*', // ในช่วงพัฒนา, ใช้ '*' เพื่ออนุญาตให้เรียก API ได้จากทุกที่
+  origin: '*', 
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
   credentials: true,
   optionsSuccessStatus: 204
@@ -76,7 +76,7 @@ const getStudentDetails = async (req, res, next) => {
         // --- แก้ไขตรงนี้: ดึงแค่ profile และ submissions พอ ---
         const profilePromise = pool.query(`
             SELECT
-                u.id, u.email, 
+                u.id, u.email,
                 u.prefix_th, u.first_name_th, u.last_name_th,
                 u.prefix_en, u.first_name_en, u.last_name_en, --  <-- เพิ่ม 3 คอลัมน์นี้
                 sp.*,
@@ -204,7 +204,7 @@ app.post('/api/login', async (req, res) => {
     try {
         // 1. ค้นหาผู้ใช้และ Role จากตาราง users
         const userResult = await pool.query(
-            'SELECT u.id, u.email, u.password_hash, r.role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.email = $1',
+            'SELECT u.id, u.email, u.password_hash, u.has_signed, r.role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE u.email = $1',
             [email]
         );
 
@@ -322,66 +322,69 @@ app.put('/api/users/:userId/change-password', authenticateToken, async (req, res
 });
 
 app.post('/api/students', authenticateToken, async (req, res) => {
-    // ดึงข้อมูลจาก body ของ request
+    // 1. รับข้อมูลทั้งหมดจาก Frontend ตามฟอร์มใหม่
     const { 
-        email, password, student_id, prefix_th, first_name_th, last_name_th,
-        program_id, department_id, status_id,prefix_en, first_name_en, last_name_en,faculty, plan, degree, phone
+        email, password, student_id, 
+        prefix_th, first_name_th, middle_name_th, last_name_th,
+        prefix_en, first_name_en, middle_name_en, last_name_en,
+        phone, gender,
+        degree, program_id, major, status_id, 
+        entry_year, entry_semester, entry_type, study_plan
     } = req.body;
 
-    // ตรวจสอบข้อมูลที่จำเป็น
-    if (!email || !password || !student_id || !first_name_th || !last_name_th) {
+    if (!email || !password || !student_id || !first_name_th || !last_name_th || !program_id || !status_id) {
         return res.status(400).json({ error: 'กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน' });
     }
 
     const client = await pool.connect();
     try {
-        // --- Transaction: ทำงานทั้งหมดหรือยกเลิกทั้งหมด ---
         await client.query('BEGIN');
 
-        // 1. เข้ารหัสผ่าน
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // 2. เพิ่มข้อมูลในตาราง users
-        // สมมติว่า role_id = 1 คือ 'student'
+        // 2. อัปเดต Query ในตาราง users ให้เพิ่มฟิลด์ใหม่
         const userQuery = `
             INSERT INTO users (
-            email, password_hash, role_id,
-            prefix_th, first_name_th, last_name_th,
-            prefix_en, first_name_en, last_name_en)
-            VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)
+                email, password_hash, role_id,
+                prefix_th, first_name_th, middle_name_th, last_name_th,
+                prefix_en, first_name_en, middle_name_en, last_name_en,
+                gender
+            )
+            VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id;
         `;
         const userResult = await client.query(userQuery, [
             email, hashedPassword, 
-            prefix_th, first_name_th, last_name_th,
-            prefix_en, first_name_en, last_name_en]);
+            prefix_th, first_name_th, toNull(middle_name_th), last_name_th,
+            prefix_en, first_name_en, toNull(middle_name_en), last_name_en,
+            gender
+        ]);
         const newUserId = userResult.rows[0].id;
 
-        // 3. เพิ่มข้อมูลในตาราง student_profiles
+        // 3. อัปเดต Query ในตาราง student_profiles ให้เพิ่มฟิลด์ใหม่
         const profileQuery = `
-        INSERT INTO student_profiles (
-            user_id, student_id, program_id, department_id, status_id, 
-            faculty, plan, degree, phone
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
-    `;
-    await client.query(profileQuery, [
-        newUserId, student_id, program_id, department_id, status_id, 
-        faculty, plan, degree, phone
-    ]);
+            INSERT INTO student_profiles (
+                user_id, student_id, phone, degree, program_id, major, status_id,
+                entry_year, entry_semester, entry_type, study_plan
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+        `;
+        await client.query(profileQuery, [
+            newUserId, student_id, toNull(phone), degree, program_id, toNull(major), status_id,
+            toNull(entry_year), toNull(entry_semester), toNull(entry_type), toNull(study_plan)
+        ]);
 
-        // 4. ยืนยันการทำงาน
         await client.query('COMMIT');
         
         res.status(201).json({ message: 'เพิ่มข้อมูลนักศึกษาสำเร็จ!', userId: newUserId });
 
     } catch (error) {
-        await client.query('ROLLBACK'); // ยกเลิกการทำงานหากมีข้อผิดพลาด
+        await client.query('ROLLBACK');
         console.error('Error adding student:', error);
         res.status(500).json({ error: 'Server Error หรืออาจมี Email/รหัสนักศึกษาซ้ำ' });
     } finally {
-        client.release(); // คืน connection กลับสู่ pool
+        client.release();
     }
 });
 
@@ -409,10 +412,7 @@ app.post('/api/advisors', authenticateToken, async (req, res, next) => {
         const userResult = await client.query(userQuery, [
             formData.email, hashedPassword, 
             formData.prefix_th, formData.first_name_th, formData.last_name_th,
-            formData.prefix_en, formData.first_name_en, formData.last_name_en,
-            formData.roles || [],                             
-            JSON.stringify(formData.assigned_programs || []),  
-            JSON.stringify(formData.academic_works || [])       
+            formData.prefix_en, formData.first_name_en, formData.last_name_en,       
         ]);
         const newUserId = userResult.rows[0].id;
 
@@ -426,7 +426,7 @@ app.post('/api/advisors', authenticateToken, async (req, res, next) => {
         await client.query(profileQuery, [
             newUserId, formData.advisor_id, formData.phone, formData.contact_email,
             formData.office_location, formData.gender, formData.type,
-            JSON.stringify(formData.roles || []),
+            formData.roles || [],
             JSON.stringify(formData.assigned_programs || []),
             JSON.stringify(formData.academic_works || [])
         ]);
@@ -831,7 +831,7 @@ app.get('/api/advisor/profile', authenticateToken, async (req, res) => {
     try {
         const profileQuery = `
             SELECT 
-                u.id, u.email, u.prefix_th, u.first_name_th, u.last_name_th,
+                u.id, u.email, u.prefix_th, u.first_name_th, u.last_name_th, u.signature_image_url, 
                 ap.advisor_id, ap.academic_position, ap.advisor_type, ap.phone,
                 ap.office_location, ap.roles, ap.assigned_programs
             FROM users u
@@ -1028,65 +1028,92 @@ app.get('/api/dashboard/student/:userId', authenticateToken, async (req, res) =>
 });
 
 app.get('/api/admin/student/:studentId', getStudentDetails);
+// --- API สำหรับอัปเดตข้อมูลนักศึกษาโดย Admin (ฉบับแก้ไขสมบูรณ์) ---
 app.put('/api/admin/student/:studentId', authenticateToken, async (req, res, next) => {
     const { studentId } = req.params; 
-    const formData = req.body;
+    const formData = req.body; 
+    
+    // Helper function (ควรมีอยู่แล้ว)
+    const toNull = (value) => (value === '' || value === undefined ? null : value);
     
     const client = await pool.connect();
     try {
         await client.query('BEGIN'); // เริ่ม Transaction
 
-        let userId; 
-
-        // 1. ค้นหา user_id จาก student_id ที่ส่งมา
-        const userLookupRes = await client.query(
-            'SELECT user_id FROM student_profiles WHERE student_id = $1',
-            [studentId]
-        );
-
+        // 1. ค้นหา user_id จาก student_id (เหมือนเดิม)
+        const userLookupRes = await client.query('SELECT user_id FROM student_profiles WHERE student_id = $1', [studentId]);
         if (userLookupRes.rows.length === 0) {
-            // ถ้าไม่เจอ ส่ง 404 Not Found กลับไป
             return res.status(404).json({ message: `ไม่พบนักศึกษาที่มีรหัส '${studentId}'` });
         }
-        
-        userId = userLookupRes.rows[0].user_id;
+        const userId = userLookupRes.rows[0].user_id;
 
-        // 2. อัปเดตตาราง users
+        // 2. ✅ อัปเดตตาราง users (เพิ่มฟิลด์ใหม่: ชื่อกลาง, เพศ)
         const userUpdateQuery = `
             UPDATE users SET
-                prefix_th = $1, first_name_th = $2, last_name_th = $3,
-                prefix_en = $4, first_name_en = $5, last_name_en = $6
-            WHERE id = $7;
+                prefix_th = $1, first_name_th = $2, middle_name_th = $3, last_name_th = $4,
+                prefix_en = $5, first_name_en = $6, middle_name_en = $7, last_name_en = $8
+            WHERE id = $9;
         `;
         await client.query(userUpdateQuery, [
-            formData.prefix_th, formData.first_name_th, formData.last_name_th,
-            formData.prefix_en, formData.first_name_en, formData.last_name_en,
+            formData.prefix_th, 
+            formData.first_name_th, 
+            toNull(formData.middle_name_th), 
+            formData.last_name_th,
+            formData.prefix_en, 
+            formData.first_name_en, 
+            toNull(formData.middle_name_en), 
+            formData.last_name_en,
             userId
         ]);
 
-        // 3. อัปเดตตาราง student_profiles
+        // 3. ✅ อัปเดตตาราง student_profiles (เพิ่มฟิลด์ใหม่ทั้งหมด และคงฟิลด์เก่าไว้)
         const profileUpdateQuery = `
             UPDATE student_profiles SET
-                phone = $1, degree = $2, main_advisor_id = $3, co_advisor1_id = $4, co_advisor2_id = $5,
-                faculty = $6, plan = $7, program_id = $8, department_id = $9, status_id = $10
-            WHERE user_id = $11;
+                phone = $1, 
+                degree = $2, 
+                program_id = $3, 
+                department_id = $4, 
+                status_id = $5,
+                major = $6,
+                entry_year = $7,
+                entry_semester = $8,
+                entry_type = $9,
+                study_plan = $10,
+                main_advisor_id = $11, 
+                co_advisor1_id = $12, 
+                co_advisor2_id = $13,
+                thesis_title_th = $14,
+                thesis_title_en = $15,
+                proposal_approval_date = $16,
+                final_defense_date = $17,
+                faculty = $18, 
+                plan = $19,
+                gender = $20
+            WHERE user_id = $21;
         `;
         await client.query(profileUpdateQuery, [
-    formData.phone,          // $1
-    formData.degree,         // $2
-    formData.main_advisor_id, // $3
-    formData.co_advisor1_id,  // $4
-    formData.co_advisor2_id,  // $5
-
-    formData.faculty,        // $6
-    formData.plan,           // $7
-    // $8, $9, $10 (ID) ต้องเป็นตัวเลข แต่เราใช้ toNull ป้องกันไว้แล้วในกรณีที่ไม่ใช่ ID ที่ต้องมีการตรวจสอบ
-   formData.program_id,     // $8 
-   formData.department_id,  // $9
-    formData.status_id,      // $10
-
-    userId                   // $11
-]);
+            toNull(formData.phone),                     // $1
+            formData.degree,                            // $2
+            toNull(formData.program_id),                // $3
+            toNull(formData.department_id),             // $4
+            formData.status_id,                         // $5
+            toNull(formData.major),                     // $6
+            toNull(formData.entry_year),                // $7
+            toNull(formData.entry_semester),            // $8
+            toNull(formData.entry_type),                // $9
+            toNull(formData.study_plan),                // $10
+            toNull(formData.main_advisor_id),           // $11
+            toNull(formData.co_advisor1_id),            // $12
+            toNull(formData.co_advisor2_id),            // $13
+            toNull(formData.thesis_title_th),           // $14
+            toNull(formData.thesis_title_en),           // $15
+            toNull(formData.proposal_approval_date),    // $16
+            toNull(formData.final_defense_date),        // $17
+            toNull(formData.faculty),                   // $18 (ฟิลด์เก่า)
+            toNull(formData.plan),                      // $19 (ฟิลด์เก่า)
+            formData.gender,                            // $21
+            userId                                      // $22
+        ]);
 
         await client.query('COMMIT'); // ยืนยันการเปลี่ยนแปลงทั้งหมด
         
@@ -1470,7 +1497,7 @@ app.put('/api/approvals/:taskId', authenticateToken, async (req, res) => {
                         }
 
                         // --- Role-based approvals ---
-                        case 'รออธิการบดีอนุมัติ':
+                        case 'รอคณบดีอนุมัติ':
                             nextApproverUserIds = await getUserIdsByRole('executive');
                             break;
                         case 'รอเจ้าหน้าที่ยืนยัน':
@@ -1479,7 +1506,7 @@ app.put('/api/approvals/:taskId', authenticateToken, async (req, res) => {
                         case 'รอประธานหลักสูตรอนุมัติ':
                             nextApproverUserIds = await getUserIdsByRole('program_chair');
                             break;
-                        case 'รอผู้ช่วยอธิการบดีอนุมัติ':
+                        case 'รอผู้ช่วยคณบดีอนุมัติ':
                             nextApproverUserIds = await getUserIdsByRole('assistant_rector');
                             break;
                     }
@@ -2051,6 +2078,69 @@ app.delete('/api/departments/:id', authenticateToken, async (req, res) => {
             return res.status(409).json({ message: 'ไม่สามารถลบภาควิชานี้ได้ เนื่องจากมีข้อมูลอื่นเชื่อมโยงอยู่' });
         }
         res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// --- API สำหรับลบอาจารย์ ---
+app.delete('/api/advisors/:advisorId', authenticateToken, async (req, res, next) => {
+    // ดึง advisorId จาก URL parameter
+    const { advisorId } = req.params;
+    // (ใน Production ควรมีการตรวจสอบ Role เพิ่มเติมว่าผู้ใช้เป็น Admin หรือไม่)
+
+    const client = await pool.connect();
+
+    try {
+        // เริ่มต้น Transaction
+        await client.query('BEGIN');
+
+        // 1. ค้นหา user_id จาก advisor_id ที่ระบุ
+        const userLookup = await client.query(
+            'SELECT user_id FROM advisor_profiles WHERE advisor_id = $1',
+            [advisorId]
+        );
+
+        if (userLookup.rows.length === 0) {
+            // ถ้าไม่พบ advisor_id นี้ ให้ส่ง 404 Not Found
+            return res.status(404).json({ message: 'ไม่พบข้อมูลอาจารย์ที่ระบุ' });
+        }
+        const userId = userLookup.rows[0].user_id;
+
+        // 2. (สำคัญ) อัปเดตข้อมูลในตาราง student_profiles
+        // ตั้งค่า ID ของอาจารย์ที่ถูกลบให้เป็น NULL ในโปรไฟล์ของนักศึกษาทุกคน
+        // เพื่อป้องกัน Foreign Key Constraint Error
+        await client.query(
+            `UPDATE student_profiles SET 
+                main_advisor_id = CASE WHEN main_advisor_id = $1 THEN NULL ELSE main_advisor_id END,
+                co_advisor1_id = CASE WHEN co_advisor1_id = $1 THEN NULL ELSE co_advisor1_id END,
+                co_advisor2_id = CASE WHEN co_advisor2_id = $1 THEN NULL ELSE co_advisor2_id END
+            WHERE main_advisor_id = $1 OR co_advisor1_id = $1 OR co_advisor2_id = $1`,
+            [advisorId]
+        );
+        
+        // 3. (Optional แต่แนะนำ) ลบ Tasks ที่ค้างอยู่ของอาจารย์คนนี้
+        await client.query('DELETE FROM approval_tasks WHERE approver_user_id = $1', [userId]);
+
+
+        // 4. ลบข้อมูลจากตาราง advisor_profiles
+        await client.query('DELETE FROM advisor_profiles WHERE user_id = $1', [userId]);
+
+        // 5. ลบข้อมูลจากตาราง users เป็นลำดับสุดท้าย
+        await client.query('DELETE FROM users WHERE id = $1', [userId]);
+
+        // หากทุกอย่างสำเร็จ ให้ Commit Transaction
+        await client.query('COMMIT');
+        
+        // ส่งข้อความยืนยันกลับไป
+        res.status(200).json({ message: `ลบข้อมูลอาจารย์ ${advisorId} สำเร็จ` });
+
+    } catch (error) {
+        // หากเกิดข้อผิดพลาด ให้ Rollback Transaction
+        await client.query('ROLLBACK');
+        console.error(`Error deleting advisor ${advisorId}:`, error);
+        next(error); // ส่ง Error ไปให้ Middleware จัดการ
+    } finally {
+        // คืน Connection กลับสู่ Pool ไม่ว่าจะสำเร็จหรือล้มเหลว
+        client.release();
     }
 });
 
@@ -3151,8 +3241,8 @@ app.put('/api/documents/:id', authenticateToken, upload.any(), async (req, res) 
     const updatedData = req.body; 
     const newFiles = req.files; 
     const NEXT_ADMIN_REVIEW_STATUS_ID = 1; 
+    const requiredFileTypesForForm6DB = Object.values(form6TypeMap);
 
-    // ⭐ 1. [ใหม่] Map สำหรับแปลงชื่อ Field Form 6 สั้นๆ เป็นชื่อ Type ภาษาไทยเต็มใน DB
     const form6TypeMap = {
         'thesisDraftFile': 'วิทยานิพนธ์ฉบับสมบูรณ์', 
         'abstractThFile': 'บทคัดย่อ (ภาษาไทย)', 
