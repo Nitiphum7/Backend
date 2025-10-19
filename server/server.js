@@ -573,9 +573,7 @@ app.get('/api/profile/:userId', authenticateToken, async (req, res) => {
                 case 6: // ฟอร์ม 6: ขอสอบวิทยานิพนธ์ขั้นสุดท้าย
                     if (!finalProfile.final_defense_status) {
                         finalProfile.final_defense_status = 'อนุมัติ';
-                        finalProfile.final_defense_date = details.examDate; // สมมติว่าใน form_details มี key ชื่อ examDate
-                        // อาจจะกำหนดวันที่สำเร็จการศึกษาจากตรงนี้ได้ด้วย
-                        // finalProfile.graduation_date = approvalDate; 
+                        finalProfile.final_defense_date = details.examDate;  
                     }
                     break;
                 case 7: // ผลสอบภาษาอังกฤษ ป.โท
