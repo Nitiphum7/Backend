@@ -2154,7 +2154,7 @@ app.get('/api/form1/data/:userId', authenticateToken, async (req, res) => {
         const studentQuery = `
             SELECT 
                 u.id, u.email, u.prefix_th, u.first_name_th, u.last_name_th,
-                sp.student_id, sp.degree, sp.faculty, sp.plan, sp.phone,
+                sp.student_id, sp.degree, sp.faculty, sp.study_plan, sp.phone,
                 p.name as program_name,
                 d.name as department_name
             FROM users u
