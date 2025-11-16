@@ -1146,12 +1146,7 @@ app.get('/api/advisors', authenticateToken, async (req, res) => {
                 ap.assigned_programs,  
                 ap.academic_works,   
                 r.role_name,
-                --
-                CASE
-                    WHEN r.role_name = 'executive' OR r.role_name = 'program_chair' THEN 'ผู้บริหาร'
-                    WHEN ap.advisor_type LIKE '%ภายนอก%' THEN 'อาจารย์บัณฑิตพิเศษภายนอก'
-                    ELSE 'อาจารย์ประจำ'
-                END as type
+                ap.advisor_type as type
             FROM users u
             LEFT JOIN advisor_profiles ap ON u.id = ap.user_id
             JOIN roles r ON u.role_id = r.id
@@ -1361,7 +1356,7 @@ app.put('/api/approvals/:taskId', authenticateToken, async (req, res) => {
                     if (currentStatusId === 6) { nextStatusId = 10; } else if (currentStatusId === 10) { nextStatusId = 13; } else if (currentStatusId === 13) { nextStatusId = 3; }
                 }
                 else if (docTypeId === 2 || docTypeId === 6) {
-                    if (currentStatusId === 12) { nextStatusId = 9; } else if (currentStatusId === 9) { nextStatusId = 8; } else if (currentStatusId === 8) { nextStatusId = 14; } else if (currentStatusId === 14) { nextStatusId = 15; } else if (currentStatusId === 15) { nextStatusId = 16; } else if (currentStatusId === 16) { nextStatusId = 17; } else if (currentStatusId === 17) { nextStatusId = 10; } else if (currentStatusId === 10) { nextStatusId = 13; } else if (currentStatusId === 13) { nextStatusId = 3; }
+                    if (currentStatusId === 6) { nextStatusId = 9; } else if (currentStatusId === 9) { nextStatusId = 8; } else if (currentStatusId === 8) { nextStatusId = 14; } else if (currentStatusId === 14) { nextStatusId = 15; } else if (currentStatusId === 15) { nextStatusId = 16; } else if (currentStatusId === 16) { nextStatusId = 17; } else if (currentStatusId === 17) { nextStatusId = 10; } else if (currentStatusId === 10) { nextStatusId = 13; } else if (currentStatusId === 13) { nextStatusId = 3; }
                 }
                 else if (docTypeId === 3) {
                     if (currentStatusId === 12) { nextStatusId = 9; } else if (currentStatusId === 9) { nextStatusId = 13; } else if (currentStatusId === 13) { nextStatusId = 3; }
@@ -1519,7 +1514,29 @@ app.put('/api/approvals/:taskId', authenticateToken, async (req, res) => {
                     }
                 }
             }
-        }
+        } else if (newStatus === 'rejected') {
+            
+            // ID 4 คือ "ส่งกลับแก้ไข" (ตามรูปที่คุณส่งมา)
+            const REJECTED_STATUS_ID = 4; 
+
+            // 1. อัปเดตสถานะเอกสารหลักเป็น "ส่งกลับแก้ไข"
+            await client.query(
+                'UPDATE public.document_submissions SET status_id = $1, admin_comment = $2, action_date = NOW() WHERE id = $3',
+                [REJECTED_STATUS_ID, comment || 'ส่งกลับไปแก้ไข', submission_id]
+            );
+            
+            // 2. ลบ tasks อื่นๆ ที่ค้างอยู่ (pending) ของเอกสารนี้ทิ้งทั้งหมด
+            await client.query(
+                'DELETE FROM public.approval_tasks WHERE submission_id = $1 AND status = $2',
+                [submission_id, 'pending']
+            );
+
+            // 3. Log ว่าระบบได้เปลี่ยนสถานะแล้ว
+            await client.query(
+                `INSERT INTO public.submission_logs (submission_id, actor_user_id, action, log_comment) VALUES ($1, $2, $3, $4)`,
+                [submission_id, approverId, 'ระบบเปลี่ยนสถานะเป็น "ส่งกลับแก้ไข"', 'ถูกตีกลับโดยผู้อนุมัติ']
+            );
+        }
 
         await client.query('COMMIT');
         res.json({ message: 'ดำเนินการสำเร็จ' });
@@ -2170,13 +2187,26 @@ app.get('/api/form1/data/:userId', authenticateToken, async (req, res) => {
 
         // 2. ดึงรายชื่ออาจารย์ทั้งหมดสำหรับ Dropdown
         const advisorsQuery = `
-            SELECT u.id, ap.advisor_id, u.prefix_th, u.first_name_th, u.last_name_th
+            SELECT 
+                u.id, 
+                ap.advisor_id, 
+                u.prefix_th, 
+                u.first_name_th, 
+                u.last_name_th, 
+                ap.roles,
+                (
+                    SELECT COUNT(*) 
+                    FROM student_profiles sp
+                    WHERE 
+                        sp.main_advisor_id = ap.advisor_id OR
+                        sp.co_advisor1_id = ap.advisor_id OR
+                        sp.co_advisor2_id = ap.advisor_id
+                ) AS advisee_count
             FROM users u
             JOIN advisor_profiles ap ON u.id = ap.user_id
             WHERE u.role_id = 3 ORDER BY u.first_name_th;
         `;
         const advisorsResult = await pool.query(advisorsQuery);
-        
         // 3. ส่งข้อมูลทั้งสองส่วนกลับไป
         res.json({
             studentInfo: studentResult.rows[0],
@@ -2244,7 +2274,7 @@ app.post('/api/submissions/form1', authenticateToken, async (req, res) => {
 app.get('/api/forms/form2-data/:userId', authenticateToken,  async (req, res) => {
     const { userId } = req.params;
     try {
-        // 1. ดึงข้อมูลนักศึกษา (ส่วนนี้ถูกต้องแล้ว)
+        // ... (ส่วนที่ 1: ดึงข้อมูลนักศึกษา - เหมือนเดิม) ...
         const studentQuery = `
             SELECT 
                 u.id, u.email, sp.student_id,
@@ -2266,11 +2296,10 @@ app.get('/api/forms/form2-data/:userId', authenticateToken,  async (req, res) =>
         }
         const studentData = studentResult.rows[0];
 
-        // 2. ดึงชื่อเต็มของอาจารย์ที่ปรึกษา (ส่วนนี้ถูกต้องแล้ว)
+        // ... (ส่วนที่ 2: ดึงชื่ออาจารย์ที่ปรึกษา - เหมือนเดิม) ...
         const advisorIds = [studentData.main_advisor_id, studentData.co_advisor1_id].filter(Boolean);
         let assignedAdvisors = [];
         if (advisorIds.length > 0) {
-            // โค้ดที่แก้ไขแล้ว (แก้ทั้ง 2 ปัญหา)
             const assignedAdvisorsQuery = `
                 SELECT ap.advisor_id, u.prefix_th, u.first_name_th, u.last_name_th
                 FROM advisor_profiles ap
@@ -2285,7 +2314,7 @@ app.get('/api/forms/form2-data/:userId', authenticateToken,  async (req, res) =>
         const mainAdvisorName = mainAdvisor ? `${mainAdvisor.prefix_th}${mainAdvisor.first_name_th} ${mainAdvisor.last_name_th}`.trim() : 'ไม่มีข้อมูล';
         const coAdvisor1Name = coAdvisor1 ? `${coAdvisor1.prefix_th}${coAdvisor1.first_name_th} ${coAdvisor1.last_name_th}`.trim() : 'ไม่มีข้อมูล';
 
-        // 3. ดึงรายชื่ออาจารย์ทั้งหมด
+        // ... (ส่วนที่ 3: ดึงอาจารย์ทั้งหมด - เหมือนเดิม) ...
         const allAdvisorsQuery = `
             SELECT ap.advisor_id, ap.advisor_type, ap.roles, u.prefix_th, u.first_name_th, u.last_name_th
             FROM advisor_profiles ap
@@ -2299,7 +2328,21 @@ app.get('/api/forms/form2-data/:userId', authenticateToken,  async (req, res) =>
         const internalAdvisors = allAdvisors.filter(a => a.advisor_type !== 'อาจารย์บัณฑิตพิเศษภายนอก');
         const externalAdvisors = allAdvisors.filter(a => a.advisor_type === 'อาจารย์บัณฑิตพิเศษภายนอก');
 
-        // ✅✅✅ แก้ไข Logic: กลับมาใช้การกรองตาม 'roles' ที่อัปเดตแล้ว ✅✅✅
+        // --- 💡💡💡 จุดที่แก้ไข (ยึดตามคำสั่งนี้) 💡💡💡 ---
+
+        // 1. สร้างรายชื่อ "ประธานสอบ"
+        const chairList = internalAdvisors.filter(a => 
+            a.roles?.includes("ประธานสอบ") && 
+            !usedAdvisorIds.includes(a.advisor_id)
+        );
+
+        // 2. สร้างรายชื่อ "กรรมการสอบ" (คนที่มียศ "สอบ")
+        const examinerList = internalAdvisors.filter(a => 
+            a.roles?.includes("สอบ") && 
+            !usedAdvisorIds.includes(a.advisor_id)
+        );
+        // --- 💡💡💡 สิ้นสุดจุดที่แก้ไข 💡💡💡 ---
+
         const responseData = {
             studentInfo: {
                 fullname: `${studentData.prefix_th} ${studentData.first_name_th} ${studentData.last_name_th}`.trim(),
@@ -2308,9 +2351,16 @@ app.get('/api/forms/form2-data/:userId', authenticateToken,  async (req, res) =>
             advisorLists: {
                 mainAdvisorName,
                 coAdvisor1Name,
-                potentialChairs: internalAdvisors.filter(a => a.roles?.includes("ประธานสอบ") && !usedAdvisorIds.includes(a.advisor_id)),
-                potentialCoAdvisors2: internalAdvisors.filter(a => a.roles?.includes("ที่ปรึกษาร่วม") && !usedAdvisorIds.includes(a.advisor_id)),
-                internalMembers: internalAdvisors.filter(a => !usedAdvisorIds.includes(a.advisor_id)),
+                
+                // 1. ประธานกรรมการสอบ (ใช้ "ประธานสอบ")
+                potentialChairs: chairList,
+                
+                // 2. กรรมการสอบ 1 (ใช้ "สอบ")
+                potentialCoAdvisors2: examinerList,
+
+                // 3. กรรมการสอบ 2 (ใช้ "สอบ")
+                internalMembers: examinerList,
+
                 externalMembers: externalAdvisors,
             }
         };
@@ -2791,6 +2841,7 @@ app.post('/api/submissions/form5', authenticateToken, async (req, res, next) => 
 });
 
 // --- API สำหรับดึงข้อมูลที่จำเป็นสำหรับ Form 6 (แก้ไขแล้ว) ---
+// --- API สำหรับดึงข้อมูลที่จำเป็นสำหรับ Form 6 (แก้ไขแล้ว) ---
 app.get('/api/forms/form6-data/:userId', authenticateToken, async (req, res, next) => {
     try {
         const { userId } = req.params;
@@ -2820,7 +2871,7 @@ app.get('/api/forms/form6-data/:userId', authenticateToken, async (req, res, nex
         studentData.committee_from_form2 = studentData.form2_details?.committee || {};
         delete studentData.form2_details;
 
-        // ✅✅✅ 2. แก้ไข Query ให้ดึงคอลัมน์ roles มาด้วย ✅✅✅
+        // 2. ดึงอาจารย์ทั้งหมด (ดึง roles มาด้วย - ถูกต้องแล้ว)
         const advisorsRes = await pool.query(`
             SELECT 
                 u.id, 
@@ -2829,29 +2880,44 @@ app.get('/api/forms/form6-data/:userId', authenticateToken, async (req, res, nex
                 u.first_name_th, 
                 u.last_name_th, 
                 ap.advisor_type,
-                ap.roles -- <-- ดึงคอลัมน์ roles มาจาก advisor_profiles
+                ap.roles
             FROM users u 
             JOIN advisor_profiles ap ON u.id = ap.user_id
         `);
         const allAdvisors = advisorsRes.rows;
 
+        // 3. กรองอาจารย์
         const usedAdvisorIds = [
             studentData.main_advisor_id, 
             studentData.co_advisor1_id
         ].filter(Boolean);
 
-        // ✅✅✅ 3. แก้ไข Logic การกรองข้อมูลด้วย JavaScript ✅✅✅
+        const internalAdvisors = allAdvisors.filter(a => a.advisor_type !== 'อาจารย์บัณฑิตพิเศษภายนอก');
+        const externalAdvisors = allAdvisors.filter(a => a.advisor_type === 'อาจารย์บัณฑิตพิเศษภายนอก');
+
+
+        // --- 💡💡💡 จุดที่แก้ไข (Logic สำหรับ Form 6) 💡💡💡 ---
+
+        // 1. สร้างรายชื่อ "ประธานสอบ" (อันนี้คุณบอกว่า "ตรงแล้ว")
+        const chairList = internalAdvisors.filter(a => 
+            a.roles?.includes("ประธานสอบ") && 
+            !usedAdvisorIds.includes(a.advisor_id)
+        );
+
+        // 2. สร้างรายชื่อ "กรรมการสอบ" (เปลี่ยนกลับเป็น "ที่ปรึกษาร่วม")
+        const examinerList_Form6 = internalAdvisors.filter(a => 
+            a.roles?.includes("ที่ปรึกษาร่วม") && // ‼️‼️ แก้กลับเป็น "ที่ปรึกษาร่วม" (ไม่มี "วิทยานิพนธ์") ‼️‼️
+            !usedAdvisorIds.includes(a.advisor_id)
+        );
+        // --- 💡💡💡 สิ้นสุดจุดที่แก้ไข 💡💡💡 ---
+
+
+        // 4. สร้าง advisorLists ที่จะส่งกลับ
         const advisorLists = {
-            // กรองหาเฉพาะอาจารย์ที่มี role 'ประธานสอบ' และไม่ใช่ อ.ที่ปรึกษาของนักศึกษาอยู่แล้ว
-            potentialChairs: allAdvisors.filter(adv => 
-                adv.roles?.includes('ประธานสอบ') && !usedAdvisorIds.includes(adv.advisor_id)
-            ),
-             // กรองหาเฉพาะอาจารย์ที่มี role 'ที่ปรึกษาร่วม' และไม่ใช่ อ.ที่ปรึกษาของนักศึกษาอยู่แล้ว
-            potentialCoAdvisors2: allAdvisors.filter(adv => 
-                adv.roles?.includes('ที่ปรึกษาร่วม') && !usedAdvisorIds.includes(adv.advisor_id)
-            ),
-            internalMembers: allAdvisors, // ส่งอาจารย์ทั้งหมดไปสำหรับช่องอื่นๆ
-            externalMembers: allAdvisors.filter(adv => adv.advisor_type?.includes('ภายนอก')),
+            potentialChairs: chairList,       // 1. ประธาน (ใช้ "ประธานสอบ")
+            potentialCoAdvisors2: examinerList_Form6, // 2. กรรมการ 1
+            internalMembers: examinerList_Form6,    // 3. กรรมการ 2
+            externalMembers: externalAdvisors,
         };
 
         res.json({ studentInfo: studentData, advisorLists });
@@ -2859,7 +2925,6 @@ app.get('/api/forms/form6-data/:userId', authenticateToken, async (req, res, nex
         next(error);
     }
 });
-
 
 // --- API สำหรับการยื่น Form 6 (แก้ไขแล้ว) ---
 app.post('/api/submissions/form6', authenticateToken, async (req, res, next) => {
