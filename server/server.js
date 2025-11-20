@@ -3304,8 +3304,6 @@ app.put('/api/documents/:id', authenticateToken, upload.any(), async (req, res) 
     const updatedData = req.body; 
     const newFiles = req.files; 
     const NEXT_ADMIN_REVIEW_STATUS_ID = 1; 
-    const requiredFileTypesForForm6DB = Object.values(form6TypeMap);
-
     const form6TypeMap = {
         'thesisDraftFile': 'วิทยานิพนธ์ฉบับสมบูรณ์', 
         'abstractThFile': 'บทคัดย่อ (ภาษาไทย)', 
@@ -3315,6 +3313,9 @@ app.put('/api/documents/:id', authenticateToken, upload.any(), async (req, res) 
         'publicationProofFile': 'หลักฐานการตอบรับการตีพิมพ์/นำเสนอผลงาน',
         'gradeCheckProofFile': 'หลักฐานการตรวจสอบผลการเรียน',
     };
+
+    // ✅✅✅ 2. แล้วค่อยเรียกใช้ตรงนี้ ✅✅✅
+    const requiredFileTypesForForm6DB = Object.values(form6TypeMap);
 
     try {
         const currentDocResult = await pool.query(
